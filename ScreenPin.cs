@@ -5,6 +5,7 @@ using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace ScreenPin {
     static class Program {
@@ -44,11 +45,21 @@ namespace ScreenPin {
             var menu = new ContextMenuStrip();
             menu.Items.Add("Новый снимок", null, delegate { StartCapture(); });
             menu.Items.Add("Открыть ScreenPin", null, delegate { ShowMain(); });
+            var startup = new ToolStripMenuItem("Запускать вместе с Windows") { CheckOnClick = true };
+            try { using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) startup.Checked = key != null && key.GetValue("ScreenPin") != null; } catch { startup.Enabled = false; }
+            startup.Click += delegate {
+                try { using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true)) {
+                    if (key == null) throw new InvalidOperationException("Раздел автозапуска недоступен");
+                    if (startup.Checked) key.SetValue("ScreenPin", "\"" + Application.ExecutablePath + "\"");
+                    else key.DeleteValue("ScreenPin", false);
+                } } catch (Exception ex) { startup.Checked = !startup.Checked; MessageBox.Show("Не удалось изменить автозапуск: " + ex.Message, "ScreenPin"); }
+            };
+            menu.Items.Add(startup);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Выход", null, delegate { exiting = true; Close(); });
             tray = new NotifyIcon { Text = "ScreenPin", Icon = SystemIcons.Application, ContextMenuStrip = menu, Visible = true };
             tray.DoubleClick += delegate { ShowMain(); };
-            Shown += delegate { if (!RegisterHotKey(Handle, 1, 0x0002 | 0x0004 | 0x4000, 0x32)) hotkeyNote.Text = "Горячая клавиша занята — используй кнопку"; };
+            Shown += delegate { if (!RegisterHotKey(Handle, 1, 0x0002 | 0x0004 | 0x4000, 0x32)) { hotkeyNote.Text = "Горячая клавиша занята — используй кнопку"; tray.ShowBalloonTip(4000, "ScreenPin", "Ctrl + Shift + 2 уже занята. Используйте меню в трее.", ToolTipIcon.Warning); } BeginInvoke((Action)delegate { Hide(); }); };
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
             FormClosed += delegate { UnregisterHotKey(Handle, 1); tray.Visible = false; tray.Dispose(); };
         }
@@ -107,37 +118,148 @@ namespace ScreenPin {
         }
     }
 
+    // Изображение занимает всю площадь: отдельная полупрозрачная панель
+    // появляется только при наведении и не меняет яркость самого снимка.
     class PinWindow : Form {
+        [DllImport("user32.dll")] static extern bool ReleaseCapture();
+        [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
+        const int WM_NCLBUTTONDOWN = 0x00A1;
+        const int HTCAPTION = 2;
+        const int HTBOTTOMRIGHT = 17;
         readonly Bitmap image;
         readonly PictureBox picture;
-        Point dragStart, windowStart;
+        readonly PinToolbar toolbar;
+        readonly System.Windows.Forms.Timer hoverTimer;
+        readonly System.Windows.Forms.Timer zoomTimer;
+        Size zoomStart, zoomTarget;
+        int zoomFrame;
+        bool moving;
+
         public PinWindow(Bitmap image) {
-            this.image = image; Text = "ScreenPin — снимок"; FormBorderStyle = FormBorderStyle.SizableToolWindow;
-            TopMost = true; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual;
-            BackColor = Color.FromArgb(24, 28, 39); MinimumSize = new Size(160, 100);
+            this.image = image;
+            Text = "ScreenPin — снимок";
+            FormBorderStyle = FormBorderStyle.None;
+            TopMost = true;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Color.FromArgb(20, 23, 31);
+            MinimumSize = new Size(160, 90);
+            DoubleBuffered = true;
             int maxW = Math.Min(900, Screen.PrimaryScreen.WorkingArea.Width - 50);
-            double scale = Math.Min(1.0, (double)maxW / image.Width);
-            ClientSize = new Size(Math.Max(160, (int)(image.Width * scale)), Math.Max(75, (int)(image.Height * scale) + 34));
-            var bar = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = Color.FromArgb(30, 35, 49) };
-            var label = new Label { Text = "  SCREENPIN  ·  перетащи снимок", ForeColor = Color.FromArgb(186, 197, 216), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 9) };
-            var close = MakeButton("✕", "Закрыть снимок"); close.Click += delegate { Close(); };
-            var save = MakeButton("↓", "Сохранить как PNG"); save.Click += delegate { SaveImage(); };
-            var plus = MakeButton("+", "Увеличить"); plus.Click += delegate { Zoom(1.2); };
-            var minus = MakeButton("−", "Уменьшить"); minus.Click += delegate { Zoom(1 / 1.2); };
-            bar.Controls.Add(label); bar.Controls.Add(close); bar.Controls.Add(save); bar.Controls.Add(plus); bar.Controls.Add(minus);
-            picture = new PictureBox { Dock = DockStyle.Fill, Image = image, SizeMode = PictureBoxSizeMode.Zoom, Cursor = Cursors.SizeAll, BackColor = Color.FromArgb(20, 23, 31) };
-            picture.MouseDown += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { dragStart = Cursor.Position; windowStart = Location; } };
-            picture.MouseMove += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { Point pos = Cursor.Position; Location = new Point(windowStart.X + pos.X - dragStart.X, windowStart.Y + pos.Y - dragStart.Y); } };
-            picture.MouseWheel += delegate(object s, MouseEventArgs e) { Zoom(e.Delta > 0 ? 1.12 : 1 / 1.12); };
-            picture.MouseEnter += delegate { picture.Focus(); };
-            Controls.Add(picture); Controls.Add(bar);
-            FormClosed += delegate { picture.Image = null; image.Dispose(); };
+            int maxH = Screen.PrimaryScreen.WorkingArea.Height - 50;
+            double scale = Math.Min(1.0, Math.Min((double)maxW / image.Width, (double)maxH / image.Height));
+            ClientSize = new Size(Math.Max(160, (int)(image.Width * scale)), Math.Max(90, (int)(image.Height * scale)));
+
+            picture = new SmoothPictureBox { Dock = DockStyle.Fill, Image = image, SizeMode = PictureBoxSizeMode.Zoom, Cursor = Cursors.SizeAll, BackColor = Color.FromArgb(20, 23, 31) };
+            picture.MouseDown += delegate(object sender, MouseEventArgs e) {
+                if (e.Button != MouseButtons.Left) return;
+                picture.Focus();
+                // Нижний правый угол — изменение размера, остальная площадь — перемещение.
+                bool resize = e.X >= picture.Width - 18 && e.Y >= picture.Height - 18;
+                moving = true;
+                toolbar.Hide();
+                ReleaseCapture();
+                SendMessage(Handle, WM_NCLBUTTONDOWN, resize ? HTBOTTOMRIGHT : HTCAPTION, 0);
+                moving = false;
+                UpdateToolbar();
+            };
+            picture.MouseMove += delegate(object sender, MouseEventArgs e) {
+                picture.Cursor = e.X >= picture.Width - 18 && e.Y >= picture.Height - 18 ? Cursors.SizeNWSE : Cursors.SizeAll;
+            };
+            picture.MouseWheel += delegate(object sender, MouseEventArgs e) { Zoom(e.Delta > 0 ? 1.12 : 1 / 1.12); };
+            Controls.Add(picture);
+
+            toolbar = new PinToolbar();
+            toolbar.ZoomIn += delegate { Zoom(1.2); };
+            toolbar.ZoomOut += delegate { Zoom(1 / 1.2); };
+            toolbar.Save += delegate { SaveImage(); };
+            toolbar.ClosePin += delegate { Close(); };
+            LocationChanged += delegate { PositionToolbar(); };
+            SizeChanged += delegate { PositionToolbar(); };
+            Shown += delegate { toolbar.Show(this); PositionToolbar(); UpdateToolbar(); };
+            hoverTimer = new System.Windows.Forms.Timer { Interval = 100 };
+            hoverTimer.Tick += delegate { UpdateToolbar(); };
+            hoverTimer.Start();
+            zoomTimer = new System.Windows.Forms.Timer { Interval = 16 };
+            zoomTimer.Tick += delegate {
+                zoomFrame++;
+                double t = Math.Min(1.0, zoomFrame / 7.0);
+                double eased = 1.0 - Math.Pow(1.0 - t, 3);
+                ClientSize = new Size((int)(zoomStart.Width + (zoomTarget.Width - zoomStart.Width) * eased),
+                                      (int)(zoomStart.Height + (zoomTarget.Height - zoomStart.Height) * eased));
+                if (t >= 1.0) zoomTimer.Stop();
+            };
+            FormClosed += delegate { hoverTimer.Stop(); hoverTimer.Dispose(); zoomTimer.Stop(); zoomTimer.Dispose(); toolbar.Close(); toolbar.Dispose(); picture.Image = null; image.Dispose(); };
         }
-        Button MakeButton(string text, string description) {
-            var button = new Button { Text = text, Dock = DockStyle.Right, Width = 37, FlatStyle = FlatStyle.Flat, ForeColor = Color.White, BackColor = Color.FromArgb(30, 35, 49), TabStop = false, Cursor = Cursors.Hand };
-            button.FlatAppearance.BorderSize = 0; new ToolTip().SetToolTip(button, description); return button;
+        void PositionToolbar() {
+            if (toolbar.IsDisposed) return;
+            toolbar.Location = new Point(Right - toolbar.Width - 8, Top + 8);
         }
-        void Zoom(double factor) { int w = Math.Max(160, Math.Min(4000, (int)(ClientSize.Width * factor))); int h = Math.Max(75, Math.Min(4000, (int)((ClientSize.Height - 34) * factor))) + 34; ClientSize = new Size(w, h); }
-        void SaveImage() { using (var dialog = new SaveFileDialog { Filter = "PNG (*.png)|*.png", FileName = "screenpin.png", DefaultExt = "png" }) { if (dialog.ShowDialog(this) == DialogResult.OK) try { image.Save(dialog.FileName, ImageFormat.Png); } catch (Exception ex) { MessageBox.Show("Не удалось сохранить файл: " + ex.Message, "ScreenPin"); } } }
+        void UpdateToolbar() {
+            if (toolbar.IsDisposed || moving || !Visible) return;
+            bool inside = Bounds.Contains(Cursor.Position) || (toolbar.Visible && toolbar.Bounds.Contains(Cursor.Position));
+            if (inside && !toolbar.Visible) { PositionToolbar(); toolbar.Show(this); }
+            else if (!inside && toolbar.Visible) toolbar.Hide();
+        }
+        void Zoom(double factor) {
+            zoomTimer.Stop();
+            zoomStart = ClientSize;
+            zoomTarget = new Size(Math.Max(160, Math.Min(4000, (int)(ClientSize.Width * factor))),
+                                  Math.Max(90, Math.Min(4000, (int)(ClientSize.Height * factor))));
+            zoomFrame = 0;
+            zoomTimer.Start();
+        }
+        void SaveImage() {
+            using (var dialog = new SaveFileDialog { Filter = "PNG (*.png)|*.png", FileName = "screenpin.png", DefaultExt = "png" }) {
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                    try { image.Save(dialog.FileName, ImageFormat.Png); }
+                    catch (Exception ex) { MessageBox.Show("Не удалось сохранить файл: " + ex.Message, "ScreenPin"); }
+            }
+        }
+    }
+
+    class SmoothPictureBox : PictureBox {
+        public SmoothPictureBox() {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.Selectable, true);
+            TabStop = true;
+        }
+    }
+
+    // Отдельное окно позволяет менять прозрачность панели, не затрагивая снимок.
+    class PinToolbar : Form {
+        public event EventHandler ZoomIn, ZoomOut, Save, ClosePin;
+        protected override bool ShowWithoutActivation { get { return true; } }
+        public PinToolbar() {
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            ShowInTaskbar = false;
+            TopMost = true;
+            BackColor = Color.FromArgb(32, 36, 48);
+            Opacity = 0.86;
+            Size = new Size(144, 38);
+            using (var shape = new GraphicsPath()) {
+                shape.AddArc(0, 0, 24, 24, 180, 90);
+                shape.AddArc(Width - 24, 0, 24, 24, 270, 90);
+                shape.AddArc(Width - 24, Height - 24, 24, 24, 0, 90);
+                shape.AddArc(0, Height - 24, 24, 24, 90, 90);
+                shape.CloseFigure();
+                Region = new Region(shape);
+            }
+            var tip = new ToolTip();
+            AddButton("−", "Уменьшить", 4, delegate { if (ZoomOut != null) ZoomOut(this, EventArgs.Empty); }, tip);
+            AddButton("+", "Увеличить", 38, delegate { if (ZoomIn != null) ZoomIn(this, EventArgs.Empty); }, tip);
+            AddButton("↓", "Сохранить PNG", 72, delegate { if (Save != null) Save(this, EventArgs.Empty); }, tip);
+            AddButton("×", "Закрыть снимок", 106, delegate { if (ClosePin != null) ClosePin(this, EventArgs.Empty); }, tip);
+            FormClosed += delegate { tip.Dispose(); };
+        }
+        void AddButton(string symbol, string hint, int x, EventHandler action, ToolTip tip) {
+            var button = new Button { Text = symbol, Location = new Point(x, 4), Size = new Size(30, 30), FlatStyle = FlatStyle.Flat,
+                ForeColor = Color.White, BackColor = Color.FromArgb(53, 58, 72), Font = new Font("Segoe UI", 13), TabStop = false, Cursor = Cursors.Hand };
+            button.FlatAppearance.BorderSize = 0;
+            using (var circle = new GraphicsPath()) { circle.AddEllipse(0, 0, 29, 29); button.Region = new Region(circle); }
+            button.Click += action;
+            tip.SetToolTip(button, hint);
+            Controls.Add(button);
+        }
     }
 }
