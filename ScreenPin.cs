@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
@@ -11,7 +12,17 @@ using Microsoft.Win32;
 namespace ScreenPin {
     static class Program {
         [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+        public static void RegisterBundledLibraries() {
+            AppDomain.CurrentDomain.AssemblyResolve += delegate(object sender, ResolveEventArgs e) {
+                if (new AssemblyName(e.Name).Name != "zxing") return null;
+                using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ScreenPin.zxing.dll")) {
+                    if (stream == null) return null;
+                    using (var bytes = new MemoryStream()) { stream.CopyTo(bytes); return Assembly.Load(bytes.ToArray()); }
+                }
+            };
+        }
         [STAThread] static void Main() {
+            RegisterBundledLibraries();
             SetProcessDPIAware();
             bool created;
             using (var mutex = new Mutex(true, @"Local\ScreenPinMVP", out created)) {

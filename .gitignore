@@ -1,3 +1,5 @@
 dist/
 *.user
 *.pdb
+macos/node_modules/
+macos/dist/

@@ -227,33 +227,80 @@ namespace ScreenPin {
         public string Name, Path;
         public override string ToString() { return Name; }
     }
+    class BrowserSelector : Control {
+        readonly List<BrowserChoice> choices = new List<BrowserChoice>();
+        readonly ContextMenuStrip menu = new ContextMenuStrip();
+        int selected;
+        public BrowserChoice SelectedChoice { get { return choices.Count == 0 ? null : choices[selected]; } }
+        public BrowserSelector() {
+            Cursor = Cursors.Hand; TabStop = true; DoubleBuffered = true;
+            SetStyle(ControlStyles.Selectable | ControlStyles.ResizeRedraw, true);
+            menu.ShowImageMargin = false; menu.BackColor = Color.FromArgb(35, 40, 55);
+            menu.ForeColor = Color.FromArgb(237, 240, 249); menu.Font = new Font("Segoe UI", 10);
+            menu.Renderer = new ToolStripProfessionalRenderer(new BrowserMenuColors());
+        }
+        public void Add(BrowserChoice choice) {
+            int index = choices.Count; choices.Add(choice);
+            var item = new ToolStripMenuItem(choice.Name) { Padding = new Padding(12, 7, 12, 7) };
+            item.Click += delegate { selected = index; Invalidate(); }; menu.Items.Add(item);
+        }
+        protected override void OnPaint(PaintEventArgs e) {
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using (var path = Shapes.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 12))
+            using (var fill = new SolidBrush(Color.FromArgb(35, 40, 55)))
+            using (var border = new Pen(Focused ? Color.FromArgb(124, 117, 240) : Color.FromArgb(55, 62, 82))) {
+                e.Graphics.FillPath(fill, path); e.Graphics.DrawPath(border, path);
+            }
+            TextRenderer.DrawText(e.Graphics, SelectedChoice == null ? "" : SelectedChoice.Name, Font,
+                new Rectangle(17, 0, Width - 55, Height), Color.FromArgb(230, 233, 243), TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
+            using (var pen = new Pen(Color.FromArgb(160, 169, 191), 1.8f)) {
+                e.Graphics.DrawLines(pen, new Point[] { new Point(Width - 30, Height / 2 - 2), new Point(Width - 25, Height / 2 + 3), new Point(Width - 20, Height / 2 - 2) });
+            }
+        }
+        protected override void OnClick(EventArgs e) { base.OnClick(e); Focus(); if (choices.Count > 0) menu.Show(this, new Point(0, Height + 3)); }
+        protected override void OnKeyDown(KeyEventArgs e) { base.OnKeyDown(e); if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space || e.KeyCode == Keys.Down) { OnClick(EventArgs.Empty); e.Handled = true; } }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+        protected override void Dispose(bool disposing) { if (disposing) menu.Dispose(); base.Dispose(disposing); }
+    }
+    class BrowserMenuColors : ProfessionalColorTable {
+        public override Color ToolStripDropDownBackground { get { return Color.FromArgb(35, 40, 55); } }
+        public override Color MenuItemSelected { get { return Color.FromArgb(65, 70, 96); } }
+        public override Color MenuItemBorder { get { return Color.FromArgb(65, 70, 96); } }
+        public override Color MenuBorder { get { return Color.FromArgb(55, 62, 82); } }
+    }
     class QrResultWindow : QrBaseWindow {
         readonly string value;
-        readonly ComboBox browsers;
-        public QrResultWindow(string value) : base("QR распознан", 325) {
+        readonly BrowserSelector browsers;
+        public QrResultWindow(string value) : base("QR распознан", 380) {
             this.value = value;
-            Controls.Add(new Label { Text = "Содержимое QR-кода", Location = new Point(28, 70), AutoSize = true, ForeColor = Muted, Font = new Font("Segoe UI", 9) });
-            Controls.Add(new TextBox { Text = value, ReadOnly = true, Multiline = true, ScrollBars = ScrollBars.Vertical, Location = new Point(28, 97), Size = new Size(364, 70), BackColor = Color.FromArgb(39,45,62), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle });
-            Controls.Add(new Label { Text = "Открыть в браузере", Location = new Point(28, 187), AutoSize = true, ForeColor = Muted, Font = new Font("Segoe UI", 9) });
-            browsers = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(28, 212), Width = 364, BackColor = Color.FromArgb(39,45,62), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            browsers.Items.Add(new BrowserChoice { Name = "Браузер по умолчанию", Path = null });
+            Uri uri; bool isLink = Uri.TryCreate(value.Trim(), UriKind.Absolute, out uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+            Controls.Add(new Label { Text = isLink ? "ССЫЛКА" : "СОДЕРЖИМОЕ", Location = new Point(29, 73), AutoSize = true, ForeColor = Color.FromArgb(165, 158, 250), Font = new Font("Segoe UI Semibold", 9) });
+            var card = new SettingsCard { Location = new Point(27, 98), Size = new Size(366, 103) };
+            card.Controls.Add(new Label { Text = isLink ? uri.Host : "Текст из QR-кода", Location = new Point(15, 11), Size = new Size(334, 19), AutoEllipsis = true, BackColor = Color.FromArgb(27,31,43), ForeColor = Muted, Font = new Font("Segoe UI", 9) });
+            card.Controls.Add(new TextBox { Text = value, ReadOnly = true, Multiline = true, ScrollBars = value.Length > 110 || value.IndexOf('\n') >= 0 ? ScrollBars.Vertical : ScrollBars.None, Location = new Point(16, 36), Size = new Size(334, 52), BackColor = Color.FromArgb(27,31,43), ForeColor = Color.FromArgb(237,240,249), BorderStyle = BorderStyle.None });
+            Controls.Add(card);
+            Controls.Add(new Label { Text = "Открыть в браузере", Location = new Point(29, 222), AutoSize = true, ForeColor = Muted, Font = new Font("Segoe UI", 9) });
+            browsers = new BrowserSelector { Location = new Point(27, 247), Size = new Size(366, 43), Font = new Font("Segoe UI", 10) };
+            browsers.Add(new BrowserChoice { Name = "Браузер по умолчанию", Path = null });
             var roots = new string[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) };
             AddBrowser("Google Chrome", roots, @"Google\Chrome\Application\chrome.exe");
             AddBrowser("Microsoft Edge", roots, @"Microsoft\Edge\Application\msedge.exe");
             AddBrowser("Mozilla Firefox", roots, @"Mozilla Firefox\firefox.exe");
             AddBrowser("Brave", roots, @"BraveSoftware\Brave-Browser\Application\brave.exe");
-            browsers.SelectedIndex = 0; Controls.Add(browsers);
-            Button("Копировать", 28, 265, 174, false, delegate { try { Clipboard.SetText(value); } catch (Exception ex) { MessageBox.Show(ex.Message, "ScreenPin"); } });
-            Button("Открыть", 218, 265, 174, true, delegate { OpenLink(); });
+            Controls.Add(browsers);
+            Button("Копировать", 27, 316, 175, false, delegate { try { Clipboard.SetText(value); } catch (Exception ex) { MessageBox.Show(ex.Message, "ScreenPin"); } });
+            var open = Button("Открыть ссылку  ↗", 218, 316, 175, true, delegate { OpenLink(); });
+            if (!isLink) { open.Enabled = false; open.Fill = Color.FromArgb(48,54,73); }
         }
         void AddBrowser(string name, string[] roots, string relative) {
-            foreach (string root in roots) { if (String.IsNullOrEmpty(root)) continue; string file = System.IO.Path.Combine(root, relative); if (File.Exists(file)) { browsers.Items.Add(new BrowserChoice { Name = name, Path = file }); return; } }
+            foreach (string root in roots) { if (String.IsNullOrEmpty(root)) continue; string file = System.IO.Path.Combine(root, relative); if (File.Exists(file)) { browsers.Add(new BrowserChoice { Name = name, Path = file }); return; } }
         }
         void OpenLink() {
             Uri uri;
             if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)) { MessageBox.Show("В QR-коде нет полной ссылки http:// или https://. Можно скопировать содержимое.", "ScreenPin"); return; }
             try {
-                var selected = (BrowserChoice)browsers.SelectedItem;
+                var selected = browsers.SelectedChoice;
                 if (selected.Path == null) Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
                 else Process.Start(new ProcessStartInfo(selected.Path, "\"" + uri.AbsoluteUri.Replace("\"", "%22") + "\"") { UseShellExecute = false });
             } catch (Exception ex) { MessageBox.Show("Не удалось открыть ссылку: " + ex.Message, "ScreenPin"); }
