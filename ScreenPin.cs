@@ -26,6 +26,7 @@ namespace ScreenPin {
     class MainWindow : Form {
         [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint key);
         [DllImport("user32.dll", SetLastError = true)] static extern bool UnregisterHotKey(IntPtr hwnd, int id);
+        [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
         const int HotkeyMessage = 0x0312;
         readonly NotifyIcon tray;
         readonly Label hotkeyNote;
@@ -37,7 +38,11 @@ namespace ScreenPin {
         bool exiting;
 
         public MainWindow() {
-            Text = "ScreenPin · Настройки"; ClientSize = new Size(480, 390); MinimumSize = new Size(496, 429);
+            Text = "ScreenPin · Настройки"; ClientSize = new Size(480, 390); FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false;
+            HandleCreated += delegate {
+                try { int dark = 1; if (DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int)) != 0) DwmSetWindowAttribute(Handle, 19, ref dark, sizeof(int)); }
+                catch (DllNotFoundException) { } catch (EntryPointNotFoundException) { }
+            };
             StartPosition = FormStartPosition.CenterScreen; BackColor = Color.FromArgb(19, 23, 34);
             ForeColor = Color.FromArgb(237, 240, 249); Font = new Font("Segoe UI", 10);
             var title = new Label { Text = "ScreenPin", Font = new Font("Segoe UI Semibold", 22), AutoSize = true, Location = new Point(26, 18) };
