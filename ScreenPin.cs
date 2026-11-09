@@ -94,6 +94,7 @@ namespace ScreenPin {
             };
             menu.Items.Add(startup);
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Лицензия ZXing", null, delegate { ShowLicense(); });
             menu.Items.Add("Выход", null, delegate { exiting = true; Close(); });
             tray = new NotifyIcon { Text = "ScreenPin", Icon = SystemIcons.Application, ContextMenuStrip = menu, Visible = true };
             tray.DoubleClick += delegate { ShowMain(); };
@@ -122,6 +123,16 @@ namespace ScreenPin {
         void ShowQrSettings() {
             if (qrHotkeys == null) return;
             using (var dialog = new QrSettingsWindow(qrHotkeys)) { qrHotkeys.Recording = true; try { dialog.ShowDialog(); } finally { qrHotkeys.Recording = false; } }
+        }
+        void ShowLicense() {
+            using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ScreenPin.ZXingLicense.txt")) {
+                if (stream == null) { MessageBox.Show("Лицензия не найдена.", "ScreenPin"); return; }
+                using (var reader = new StreamReader(stream))
+                using (var window = new Form { Text = "ScreenPin · Лицензия ZXing", Size = new Size(680, 550), StartPosition = FormStartPosition.CenterScreen, TopMost = true }) {
+                    window.Controls.Add(new TextBox { Text = reader.ReadToEnd(), Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill, Font = new Font("Consolas", 10) });
+                    window.ShowDialog();
+                }
+            }
         }
         void HotkeyKeyDown(object sender, KeyEventArgs e) {
             e.SuppressKeyPress = true;
