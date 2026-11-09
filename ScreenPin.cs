@@ -34,6 +34,7 @@ namespace ScreenPin {
         HotkeyBinding activeHotkey;
         HotkeyBinding candidateHotkey;
         int activeHotkeyId;
+        QrHotkeys qrHotkeys;
         bool capturing;
         bool exiting;
 
@@ -47,6 +48,8 @@ namespace ScreenPin {
             ForeColor = Color.FromArgb(237, 240, 249); Font = new Font("Segoe UI", 10);
             var title = new Label { Text = "ScreenPin", Font = new Font("Segoe UI Semibold", 22), AutoSize = true, Location = new Point(26, 24) };
             var subtitle = new Label { Text = "Всё важное — перед глазами", ForeColor = Color.FromArgb(151, 162, 184), AutoSize = true, Location = new Point(30, 67) };
+            var qrSettings = new RoundedButton { Text = "QR · настройки", Location = new Point(306, 28), Size = new Size(146, 36), Fill = Color.FromArgb(48, 54, 73), ForeColor = Color.White, Cursor = Cursors.Hand };
+            qrSettings.Click += delegate { ShowQrSettings(); };
             var card = new SettingsCard { Location = new Point(28, 112), Size = new Size(424, 142) };
             var label = new Label { Text = "Горячая клавиша", BackColor = Color.FromArgb(27, 31, 43), ForeColor = Color.FromArgb(228, 232, 244), AutoSize = true, Location = new Point(20, 16), Font = new Font("Segoe UI Semibold", 10) };
             hotkeyInput = new TextBox { Location = new Point(20, 49), Width = 236, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(39, 45, 62), ForeColor = Color.White, Font = new Font("Segoe UI", 13), ShortcutsEnabled = false };
@@ -58,10 +61,13 @@ namespace ScreenPin {
             var capture = new RoundedButton { Text = "Выбрать область", Location = new Point(28, 275), Size = new Size(424, 48), Fill = Color.FromArgb(104, 102, 241), ForeColor = Color.White, Cursor = Cursors.Hand, Font = new Font("Segoe UI Semibold", 10) };
             capture.Click += delegate { StartCapture(); };
             var help = new Label { Text = "Колесо  —  размер\nAlt + колесо  —  прозрачность\nБулавка  —  закрепить снимок", AutoSize = true, Location = new Point(31, 348), ForeColor = Color.FromArgb(137, 149, 172), Font = new Font("Segoe UI", 9) };
-            Controls.AddRange(new Control[] { title, subtitle, card, capture, help });
+            Controls.AddRange(new Control[] { title, subtitle, qrSettings, card, capture, help });
             var menu = new ContextMenuStrip();
             menu.Items.Add("Новый снимок", null, delegate { StartCapture(); });
             menu.Items.Add("Настройки", null, delegate { ShowMain(); });
+            menu.Items.Add("QR из буфера обмена", null, delegate { QrWorkflows.CreateFromClipboard(); });
+            menu.Items.Add("Считать QR с экрана", null, delegate { StartQrScan(); });
+            menu.Items.Add("Настройки QR", null, delegate { ShowQrSettings(); });
             var startup = new ToolStripMenuItem("Запускать вместе с Windows") { CheckOnClick = true };
             try { using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) {
                 string savedPath = key == null ? null : key.GetValue("ScreenPin") as string;
@@ -87,12 +93,25 @@ namespace ScreenPin {
                     hotkeyNote.Text = "Сочетание занято — выбери другое";
                 }
                 hotkeyInput.Text = candidateHotkey.Display;
+                qrHotkeys = new QrHotkeys(Handle, delegate { QrWorkflows.CreateFromSelection(); }, delegate { StartQrScan(); });
+                if (!qrHotkeys.RegisterInitial()) tray.ShowBalloonTip(4000, "ScreenPin", "Одна из QR-клавиш занята. Измени её в настройках QR.", ToolTipIcon.Warning);
                 BeginInvoke((Action)delegate { Hide(); });
             };
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
-            FormClosed += delegate { if (activeHotkeyId != 0) UnregisterHotKey(Handle, activeHotkeyId); tray.Visible = false; tray.Dispose(); };
+            FormClosed += delegate { if (activeHotkeyId != 0) UnregisterHotKey(Handle, activeHotkeyId); if (qrHotkeys != null) qrHotkeys.Dispose(); tray.Visible = false; tray.Dispose(); };
         }
-        protected override void WndProc(ref Message m) { if (m.Msg == HotkeyMessage && m.WParam.ToInt32() == activeHotkeyId && !hotkeyInput.Focused) StartCapture(); base.WndProc(ref m); }
+        protected override void WndProc(ref Message m) {
+            if (m.Msg == HotkeyMessage) {
+                int id = m.WParam.ToInt32();
+                if (id == activeHotkeyId && id != 0 && !hotkeyInput.Focused && (qrHotkeys == null || !qrHotkeys.Recording)) StartCapture();
+                else if (qrHotkeys != null) qrHotkeys.HandleHotkey(id);
+            }
+            base.WndProc(ref m);
+        }
+        void ShowQrSettings() {
+            if (qrHotkeys == null) return;
+            using (var dialog = new QrSettingsWindow(qrHotkeys)) { qrHotkeys.Recording = true; try { dialog.ShowDialog(); } finally { qrHotkeys.Recording = false; } }
+        }
         void HotkeyKeyDown(object sender, KeyEventArgs e) {
             e.SuppressKeyPress = true;
             if (e.KeyCode == Keys.ControlKey || e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.Menu) return;
@@ -120,7 +139,9 @@ namespace ScreenPin {
         }
         void captureFocus() { ActiveControl = null; }
         void ShowMain() { Show(); WindowState = FormWindowState.Normal; Activate(); }
-        void StartCapture() {
+        void StartCapture() { CaptureRegion(delegate(Bitmap image, Point location) { var pin = new PinWindow(image); pin.Location = location; pin.Show(); }); }
+        void StartQrScan() { CaptureRegion(delegate(Bitmap image, Point location) { using (image) QrWorkflows.DecodeImage(image); }); }
+        void CaptureRegion(Action<Bitmap, Point> onCapture) {
             if (capturing) return;
             capturing = true;
             bool wasVisible = Visible && WindowState != FormWindowState.Minimized;
@@ -136,9 +157,7 @@ namespace ScreenPin {
                             if (selector.ShowDialog() == DialogResult.OK) {
                                 Rectangle r = selector.Selected;
                                 var image = desktop.Clone(r, PixelFormat.Format32bppArgb);
-                                var pin = new PinWindow(image);
-                                pin.Location = new Point(screen.Left + r.Left, screen.Top + r.Top);
-                                pin.Show();
+                                onCapture(image, new Point(screen.Left + r.Left, screen.Top + r.Top));
                             }
                         }
                     }
