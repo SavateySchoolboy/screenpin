@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
@@ -28,25 +29,39 @@ namespace ScreenPin {
         const int HotkeyMessage = 0x0312;
         readonly NotifyIcon tray;
         readonly Label hotkeyNote;
+        readonly TextBox hotkeyInput;
+        HotkeyBinding activeHotkey;
+        HotkeyBinding candidateHotkey;
+        int activeHotkeyId;
         bool capturing;
         bool exiting;
 
         public MainWindow() {
-            Text = "ScreenPin"; Size = new Size(440, 338); MinimumSize = new Size(440, 338);
+            Text = "ScreenPin · Настройки"; ClientSize = new Size(480, 390); MinimumSize = new Size(496, 429);
             StartPosition = FormStartPosition.CenterScreen; BackColor = Color.FromArgb(19, 23, 34);
             ForeColor = Color.FromArgb(237, 240, 249); Font = new Font("Segoe UI", 10);
-            var title = new Label { Text = "ScreenPin", Font = new Font("Segoe UI Semibold", 23), AutoSize = true, Location = new Point(26, 22) };
-            var subtitle = new Label { Text = "Нужное всегда перед глазами", ForeColor = Color.FromArgb(165, 177, 199), AutoSize = true, Location = new Point(30, 72) };
-            var capture = new Button { Text = "✂  Выбрать область", Location = new Point(30, 116), Size = new Size(355, 48), BackColor = Color.FromArgb(104, 102, 241), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            var title = new Label { Text = "ScreenPin", Font = new Font("Segoe UI Semibold", 22), AutoSize = true, Location = new Point(26, 18) };
+            var subtitle = new Label { Text = "Настройки захвата", ForeColor = Color.FromArgb(165, 177, 199), AutoSize = true, Location = new Point(30, 62) };
+            var capture = new Button { Text = "✂  Выбрать область", Location = new Point(30, 98), Size = new Size(408, 44), BackColor = Color.FromArgb(104, 102, 241), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
             capture.FlatAppearance.BorderSize = 0; capture.Click += delegate { StartCapture(); };
-            hotkeyNote = new Label { Text = "Горячая клавиша: Ctrl + Shift + 2", AutoSize = true, Location = new Point(30, 180), ForeColor = Color.FromArgb(192, 201, 220) };
-            var help = new Label { Text = "Перетащи снимок мышью · колесо — масштаб\nEsc отменяет выделение · значок в трее — выход", AutoSize = true, Location = new Point(30, 214), ForeColor = Color.FromArgb(148, 160, 182) };
-            Controls.AddRange(new Control[] { title, subtitle, capture, hotkeyNote, help });
+            var label = new Label { Text = "ГОРЯЧАЯ КЛАВИША", ForeColor = Color.FromArgb(165, 177, 199), AutoSize = true, Location = new Point(30, 167), Font = new Font("Segoe UI Semibold", 9) };
+            hotkeyInput = new TextBox { Location = new Point(30, 196), Width = 268, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(39, 45, 62), ForeColor = Color.White, Font = new Font("Segoe UI", 13), ShortcutsEnabled = false };
+            hotkeyInput.KeyDown += HotkeyKeyDown;
+            var apply = new Button { Text = "Сохранить", Location = new Point(307, 192), Size = new Size(131, 36), BackColor = Color.FromArgb(75, 80, 112), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            apply.FlatAppearance.BorderSize = 0;
+            apply.Click += delegate { ApplyCandidate(); };
+            hotkeyNote = new Label { Text = "Нажми на поле и введи новое сочетание", AutoSize = true, Location = new Point(30, 239), ForeColor = Color.FromArgb(192, 201, 220) };
+            var help = new Label { Text = "Колесо — размер   ·   Alt + колесо — прозрачность\nКнопка булавки закрепляет снимок на экране\nЗапуск вместе с Windows настраивается в трее", AutoSize = true, Location = new Point(30, 282), ForeColor = Color.FromArgb(148, 160, 182) };
+            Controls.AddRange(new Control[] { title, subtitle, capture, label, hotkeyInput, apply, hotkeyNote, help });
             var menu = new ContextMenuStrip();
             menu.Items.Add("Новый снимок", null, delegate { StartCapture(); });
-            menu.Items.Add("Открыть ScreenPin", null, delegate { ShowMain(); });
+            menu.Items.Add("Настройки", null, delegate { ShowMain(); });
             var startup = new ToolStripMenuItem("Запускать вместе с Windows") { CheckOnClick = true };
-            try { using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) startup.Checked = key != null && key.GetValue("ScreenPin") != null; } catch { startup.Enabled = false; }
+            try { using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run")) {
+                string savedPath = key == null ? null : key.GetValue("ScreenPin") as string;
+                startup.Checked = string.Equals(savedPath, "\"" + Application.ExecutablePath + "\"", StringComparison.OrdinalIgnoreCase);
+                if (!startup.Checked && !string.IsNullOrEmpty(savedPath)) startup.Text = "Обновить автозапуск для этой версии";
+            } } catch { startup.Enabled = false; }
             startup.Click += delegate {
                 try { using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true)) {
                     if (key == null) throw new InvalidOperationException("Раздел автозапуска недоступен");
@@ -59,11 +74,45 @@ namespace ScreenPin {
             menu.Items.Add("Выход", null, delegate { exiting = true; Close(); });
             tray = new NotifyIcon { Text = "ScreenPin", Icon = SystemIcons.Application, ContextMenuStrip = menu, Visible = true };
             tray.DoubleClick += delegate { ShowMain(); };
-            Shown += delegate { if (!RegisterHotKey(Handle, 1, 0x0002 | 0x0004 | 0x4000, 0x32)) { hotkeyNote.Text = "Горячая клавиша занята — используй кнопку"; tray.ShowBalloonTip(4000, "ScreenPin", "Ctrl + Shift + 2 уже занята. Используйте меню в трее.", ToolTipIcon.Warning); } BeginInvoke((Action)delegate { Hide(); }); };
+            Shown += delegate {
+                candidateHotkey = HotkeyBinding.Load();
+                if (!InstallHotkey(candidateHotkey)) {
+                    tray.ShowBalloonTip(4000, "ScreenPin", "Сохранённая клавиша занята. Откройте настройки в трее.", ToolTipIcon.Warning);
+                    hotkeyNote.Text = "Сочетание занято — выбери другое";
+                }
+                hotkeyInput.Text = candidateHotkey.Display;
+                BeginInvoke((Action)delegate { Hide(); });
+            };
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!exiting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
-            FormClosed += delegate { UnregisterHotKey(Handle, 1); tray.Visible = false; tray.Dispose(); };
+            FormClosed += delegate { if (activeHotkeyId != 0) UnregisterHotKey(Handle, activeHotkeyId); tray.Visible = false; tray.Dispose(); };
         }
-        protected override void WndProc(ref Message m) { if (m.Msg == HotkeyMessage && m.WParam.ToInt32() == 1) StartCapture(); base.WndProc(ref m); }
+        protected override void WndProc(ref Message m) { if (m.Msg == HotkeyMessage && m.WParam.ToInt32() == activeHotkeyId && !hotkeyInput.Focused) StartCapture(); base.WndProc(ref m); }
+        void HotkeyKeyDown(object sender, KeyEventArgs e) {
+            e.SuppressKeyPress = true;
+            if (e.KeyCode == Keys.ControlKey || e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.Menu) return;
+            var binding = HotkeyBinding.FromKeys(e.KeyCode, e.Modifiers);
+            if (binding == null) { hotkeyNote.Text = "Используй Ctrl, Alt или Shift вместе с клавишей"; return; }
+            candidateHotkey = binding;
+            hotkeyInput.Text = binding.Display;
+            hotkeyNote.Text = "Нажми «Сохранить», чтобы применить";
+        }
+        bool InstallHotkey(HotkeyBinding binding) {
+            if (activeHotkey != null && activeHotkey.SameAs(binding)) return true;
+            int nextId = activeHotkeyId == 1 ? 2 : 1;
+            if (!RegisterHotKey(Handle, nextId, binding.Modifiers | 0x4000, binding.Key)) return false;
+            if (activeHotkeyId != 0) UnregisterHotKey(Handle, activeHotkeyId);
+            activeHotkey = binding;
+            activeHotkeyId = nextId;
+            return true;
+        }
+        void ApplyCandidate() {
+            if (candidateHotkey == null) return;
+            if (!InstallHotkey(candidateHotkey)) { hotkeyNote.Text = "Сочетание занято. Прежнее остаётся активным."; return; }
+            try { activeHotkey.Save(); hotkeyNote.Text = "Сохранено: " + activeHotkey.Display; }
+            catch (Exception ex) { hotkeyNote.Text = "Активно до выхода, сохранить не удалось"; MessageBox.Show(ex.Message, "ScreenPin"); }
+            captureFocus();
+        }
+        void captureFocus() { ActiveControl = null; }
         void ShowMain() { Show(); WindowState = FormWindowState.Normal; Activate(); }
         void StartCapture() {
             if (capturing) return;
@@ -91,6 +140,46 @@ namespace ScreenPin {
                 finally { capturing = false; if (wasVisible) ShowMain(); }
             };
             timer.Start();
+        }
+    }
+
+    class HotkeyBinding {
+        public readonly uint Modifiers;
+        public readonly uint Key;
+        public HotkeyBinding(uint modifiers, uint key) { Modifiers = modifiers; Key = key; }
+        static string SettingsPath { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ScreenPin", "hotkey.txt"); } }
+        public bool SameAs(HotkeyBinding other) { return other != null && Modifiers == other.Modifiers && Key == other.Key; }
+        public string Display {
+            get {
+                string prefix = "";
+                if ((Modifiers & 2) != 0) prefix += "Ctrl + ";
+                if ((Modifiers & 4) != 0) prefix += "Shift + ";
+                if ((Modifiers & 1) != 0) prefix += "Alt + ";
+                string keyName = ((Keys)Key).ToString();
+                if (keyName.Length == 2 && keyName[0] == 'D' && char.IsDigit(keyName[1])) keyName = keyName.Substring(1);
+                return prefix + keyName;
+            }
+        }
+        public static HotkeyBinding FromKeys(Keys key, Keys modifiers) {
+            uint flags = 0;
+            if ((modifiers & Keys.Control) != 0) flags |= 2;
+            if ((modifiers & Keys.Shift) != 0) flags |= 4;
+            if ((modifiers & Keys.Alt) != 0) flags |= 1;
+            bool validKey = (key >= Keys.A && key <= Keys.Z) || (key >= Keys.D0 && key <= Keys.D9) || (key >= Keys.F1 && key <= Keys.F11);
+            return flags != 0 && validKey ? new HotkeyBinding(flags, (uint)key) : null;
+        }
+        public static HotkeyBinding Load() {
+            try {
+                string[] parts = File.ReadAllText(SettingsPath).Split(',');
+                uint flags, key;
+                if (parts.Length == 2 && uint.TryParse(parts[0], out flags) && uint.TryParse(parts[1], out key) && flags > 0 && flags <= 7 &&
+                    ((key >= 0x41 && key <= 0x5A) || (key >= 0x30 && key <= 0x39) || (key >= 0x70 && key <= 0x7A))) return new HotkeyBinding(flags, key);
+            } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            return new HotkeyBinding(2 | 4, (uint)Keys.D2);
+        }
+        public void Save() {
+            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath));
+            File.WriteAllText(SettingsPath, Modifiers + "," + Key);
         }
     }
 
@@ -134,6 +223,7 @@ namespace ScreenPin {
         Size zoomStart, zoomTarget;
         int zoomFrame;
         bool moving;
+        bool locked;
 
         public PinWindow(Bitmap image) {
             this.image = image;
@@ -143,17 +233,19 @@ namespace ScreenPin {
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
             BackColor = Color.FromArgb(20, 23, 31);
-            MinimumSize = new Size(160, 90);
+            MinimumSize = new Size(200, 90);
             DoubleBuffered = true;
             int maxW = Math.Min(900, Screen.PrimaryScreen.WorkingArea.Width - 50);
             int maxH = Screen.PrimaryScreen.WorkingArea.Height - 50;
             double scale = Math.Min(1.0, Math.Min((double)maxW / image.Width, (double)maxH / image.Height));
-            ClientSize = new Size(Math.Max(160, (int)(image.Width * scale)), Math.Max(90, (int)(image.Height * scale)));
+            ClientSize = new Size(Math.Max(200, (int)(image.Width * scale)), Math.Max(90, (int)(image.Height * scale)));
+            UpdateRoundedRegion();
 
             picture = new SmoothPictureBox { Dock = DockStyle.Fill, Image = image, SizeMode = PictureBoxSizeMode.Zoom, Cursor = Cursors.SizeAll, BackColor = Color.FromArgb(20, 23, 31) };
             picture.MouseDown += delegate(object sender, MouseEventArgs e) {
                 if (e.Button != MouseButtons.Left) return;
                 picture.Focus();
+                if (locked) return;
                 // Нижний правый угол — изменение размера, остальная площадь — перемещение.
                 bool resize = e.X >= picture.Width - 18 && e.Y >= picture.Height - 18;
                 moving = true;
@@ -164,9 +256,12 @@ namespace ScreenPin {
                 UpdateToolbar();
             };
             picture.MouseMove += delegate(object sender, MouseEventArgs e) {
-                picture.Cursor = e.X >= picture.Width - 18 && e.Y >= picture.Height - 18 ? Cursors.SizeNWSE : Cursors.SizeAll;
+                picture.Cursor = locked ? Cursors.Default : (e.X >= picture.Width - 18 && e.Y >= picture.Height - 18 ? Cursors.SizeNWSE : Cursors.SizeAll);
             };
-            picture.MouseWheel += delegate(object sender, MouseEventArgs e) { Zoom(e.Delta > 0 ? 1.12 : 1 / 1.12); };
+            picture.MouseWheel += delegate(object sender, MouseEventArgs e) {
+                if ((ModifierKeys & Keys.Alt) != 0) AdjustOpacity(e.Delta);
+                else Zoom(e.Delta > 0 ? 1.12 : 1 / 1.12);
+            };
             Controls.Add(picture);
 
             toolbar = new PinToolbar();
@@ -174,8 +269,9 @@ namespace ScreenPin {
             toolbar.ZoomOut += delegate { Zoom(1 / 1.2); };
             toolbar.Save += delegate { SaveImage(); };
             toolbar.ClosePin += delegate { Close(); };
+            toolbar.ToggleLock += delegate { locked = !locked; toolbar.SetLocked(locked); picture.Cursor = locked ? Cursors.Default : Cursors.SizeAll; };
             LocationChanged += delegate { PositionToolbar(); };
-            SizeChanged += delegate { PositionToolbar(); };
+            SizeChanged += delegate { UpdateRoundedRegion(); PositionToolbar(); };
             Shown += delegate { toolbar.Show(this); PositionToolbar(); UpdateToolbar(); };
             hoverTimer = new System.Windows.Forms.Timer { Interval = 100 };
             hoverTimer.Tick += delegate { UpdateToolbar(); };
@@ -195,6 +291,23 @@ namespace ScreenPin {
             if (toolbar.IsDisposed) return;
             toolbar.Location = new Point(Right - toolbar.Width - 8, Top + 8);
         }
+        void UpdateRoundedRegion() {
+            if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
+            int diameter = Math.Min(20, Math.Min(ClientSize.Width, ClientSize.Height));
+            using (var path = new GraphicsPath()) {
+                path.AddArc(0, 0, diameter, diameter, 180, 90);
+                path.AddArc(ClientSize.Width - diameter, 0, diameter, diameter, 270, 90);
+                path.AddArc(ClientSize.Width - diameter, ClientSize.Height - diameter, diameter, diameter, 0, 90);
+                path.AddArc(0, ClientSize.Height - diameter, diameter, diameter, 90, 90);
+                path.CloseFigure();
+                var previous = Region;
+                Region = new Region(path);
+                if (previous != null) previous.Dispose();
+            }
+        }
+        void AdjustOpacity(int delta) {
+            Opacity = Math.Max(0.25, Math.Min(1.0, Opacity + (delta > 0 ? 0.08 : -0.08)));
+        }
         void UpdateToolbar() {
             if (toolbar.IsDisposed || moving || !Visible) return;
             bool inside = Bounds.Contains(Cursor.Position) || (toolbar.Visible && toolbar.Bounds.Contains(Cursor.Position));
@@ -204,7 +317,7 @@ namespace ScreenPin {
         void Zoom(double factor) {
             zoomTimer.Stop();
             zoomStart = ClientSize;
-            zoomTarget = new Size(Math.Max(160, Math.Min(4000, (int)(ClientSize.Width * factor))),
+            zoomTarget = new Size(Math.Max(200, Math.Min(4000, (int)(ClientSize.Width * factor))),
                                   Math.Max(90, Math.Min(4000, (int)(ClientSize.Height * factor))));
             zoomFrame = 0;
             zoomTimer.Start();
@@ -227,39 +340,75 @@ namespace ScreenPin {
 
     // Отдельное окно позволяет менять прозрачность панели, не затрагивая снимок.
     class PinToolbar : Form {
-        public event EventHandler ZoomIn, ZoomOut, Save, ClosePin;
+        public event EventHandler ZoomIn, ZoomOut, Save, ClosePin, ToggleLock;
+        readonly ToolbarButton lockButton;
         protected override bool ShowWithoutActivation { get { return true; } }
         public PinToolbar() {
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
             ShowInTaskbar = false;
             TopMost = true;
-            BackColor = Color.FromArgb(32, 36, 48);
-            Opacity = 0.86;
-            Size = new Size(144, 38);
+            BackColor = Color.FromArgb(27, 31, 43);
+            Opacity = 0.90;
+            Size = new Size(180, 40);
             using (var shape = new GraphicsPath()) {
-                shape.AddArc(0, 0, 24, 24, 180, 90);
-                shape.AddArc(Width - 24, 0, 24, 24, 270, 90);
-                shape.AddArc(Width - 24, Height - 24, 24, 24, 0, 90);
-                shape.AddArc(0, Height - 24, 24, 24, 90, 90);
+                shape.AddArc(0, 0, 26, 26, 180, 90);
+                shape.AddArc(Width - 26, 0, 26, 26, 270, 90);
+                shape.AddArc(Width - 26, Height - 26, 26, 26, 0, 90);
+                shape.AddArc(0, Height - 26, 26, 26, 90, 90);
                 shape.CloseFigure();
                 Region = new Region(shape);
             }
             var tip = new ToolTip();
-            AddButton("−", "Уменьшить", 4, delegate { if (ZoomOut != null) ZoomOut(this, EventArgs.Empty); }, tip);
-            AddButton("+", "Увеличить", 38, delegate { if (ZoomIn != null) ZoomIn(this, EventArgs.Empty); }, tip);
-            AddButton("↓", "Сохранить PNG", 72, delegate { if (Save != null) Save(this, EventArgs.Empty); }, tip);
-            AddButton("×", "Закрыть снимок", 106, delegate { if (ClosePin != null) ClosePin(this, EventArgs.Empty); }, tip);
+            AddButton("minus", "Уменьшить", 5, delegate { if (ZoomOut != null) ZoomOut(this, EventArgs.Empty); }, tip);
+            AddButton("plus", "Увеличить", 39, delegate { if (ZoomIn != null) ZoomIn(this, EventArgs.Empty); }, tip);
+            lockButton = AddButton("pin", "Закрепить или открепить", 73, delegate { if (ToggleLock != null) ToggleLock(this, EventArgs.Empty); }, tip);
+            AddButton("save", "Сохранить PNG", 107, delegate { if (Save != null) Save(this, EventArgs.Empty); }, tip);
+            AddButton("close", "Закрыть снимок", 141, delegate { if (ClosePin != null) ClosePin(this, EventArgs.Empty); }, tip);
             FormClosed += delegate { tip.Dispose(); };
         }
-        void AddButton(string symbol, string hint, int x, EventHandler action, ToolTip tip) {
-            var button = new Button { Text = symbol, Location = new Point(x, 4), Size = new Size(30, 30), FlatStyle = FlatStyle.Flat,
-                ForeColor = Color.White, BackColor = Color.FromArgb(53, 58, 72), Font = new Font("Segoe UI", 13), TabStop = false, Cursor = Cursors.Hand };
-            button.FlatAppearance.BorderSize = 0;
-            using (var circle = new GraphicsPath()) { circle.AddEllipse(0, 0, 29, 29); button.Region = new Region(circle); }
+        public void SetLocked(bool value) { lockButton.Active = value; lockButton.Invalidate(); }
+        ToolbarButton AddButton(string icon, string hint, int x, EventHandler action, ToolTip tip) {
+            var button = new ToolbarButton(icon) { Location = new Point(x, 5), Size = new Size(30, 30), Cursor = Cursors.Hand };
             button.Click += action;
             tip.SetToolTip(button, hint);
             Controls.Add(button);
+            return button;
+        }
+    }
+
+    class ToolbarButton : Control {
+        readonly string icon;
+        bool hovered;
+        public bool Active { get; set; }
+        public ToolbarButton(string icon) {
+            this.icon = icon;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            MouseEnter += delegate { hovered = true; Invalidate(); };
+            MouseLeave += delegate { hovered = false; Invalidate(); };
+        }
+        protected override void OnPaint(PaintEventArgs e) {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Color fill = Active ? Color.FromArgb(105, 103, 224) : hovered ? Color.FromArgb(75, 82, 103) : Color.FromArgb(50, 56, 72);
+            using (var brush = new SolidBrush(fill)) g.FillEllipse(brush, 1, 1, Width - 3, Height - 3);
+            using (var pen = new Pen(Color.FromArgb(239, 242, 250), 1.7f)) {
+                pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round; pen.LineJoin = LineJoin.Round;
+                if (icon == "minus" || icon == "plus") {
+                    g.DrawLine(pen, 10, 15, 20, 15);
+                    if (icon == "plus") g.DrawLine(pen, 15, 10, 15, 20);
+                } else if (icon == "close") {
+                    g.DrawLine(pen, 11, 11, 19, 19); g.DrawLine(pen, 19, 11, 11, 19);
+                } else if (icon == "save") {
+                    g.DrawLine(pen, 15, 8, 15, 18); g.DrawLines(pen, new Point[]{new Point(11,15),new Point(15,19),new Point(19,15)});
+                    g.DrawLines(pen, new Point[]{new Point(10,21),new Point(10,23),new Point(20,23),new Point(20,21)});
+                } else if (icon == "pin") {
+                    g.DrawLines(pen, new Point[]{new Point(11,9),new Point(19,9),new Point(18,15),new Point(21,18),new Point(9,18),new Point(12,15),new Point(11,9)});
+                    g.DrawLine(pen,15,18,15,23);
+                }
+            }
         }
     }
 }
