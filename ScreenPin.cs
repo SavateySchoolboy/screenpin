@@ -38,26 +38,27 @@ namespace ScreenPin {
         bool exiting;
 
         public MainWindow() {
-            Text = "ScreenPin · Настройки"; ClientSize = new Size(480, 390); FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false;
+            Text = "ScreenPin · Настройки"; ClientSize = new Size(480, 435); FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false;
             HandleCreated += delegate {
                 try { int dark = 1; if (DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int)) != 0) DwmSetWindowAttribute(Handle, 19, ref dark, sizeof(int)); }
                 catch (DllNotFoundException) { } catch (EntryPointNotFoundException) { }
             };
-            StartPosition = FormStartPosition.CenterScreen; BackColor = Color.FromArgb(19, 23, 34);
+            StartPosition = FormStartPosition.CenterScreen; BackColor = Color.FromArgb(17, 20, 29);
             ForeColor = Color.FromArgb(237, 240, 249); Font = new Font("Segoe UI", 10);
-            var title = new Label { Text = "ScreenPin", Font = new Font("Segoe UI Semibold", 22), AutoSize = true, Location = new Point(26, 18) };
-            var subtitle = new Label { Text = "Настройки захвата", ForeColor = Color.FromArgb(165, 177, 199), AutoSize = true, Location = new Point(30, 62) };
-            var capture = new Button { Text = "✂  Выбрать область", Location = new Point(30, 98), Size = new Size(408, 44), BackColor = Color.FromArgb(104, 102, 241), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
-            capture.FlatAppearance.BorderSize = 0; capture.Click += delegate { StartCapture(); };
-            var label = new Label { Text = "ГОРЯЧАЯ КЛАВИША", ForeColor = Color.FromArgb(165, 177, 199), AutoSize = true, Location = new Point(30, 167), Font = new Font("Segoe UI Semibold", 9) };
-            hotkeyInput = new TextBox { Location = new Point(30, 196), Width = 268, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(39, 45, 62), ForeColor = Color.White, Font = new Font("Segoe UI", 13), ShortcutsEnabled = false };
+            var title = new Label { Text = "ScreenPin", Font = new Font("Segoe UI Semibold", 22), AutoSize = true, Location = new Point(26, 24) };
+            var subtitle = new Label { Text = "Всё важное — перед глазами", ForeColor = Color.FromArgb(151, 162, 184), AutoSize = true, Location = new Point(30, 67) };
+            var card = new SettingsCard { Location = new Point(28, 112), Size = new Size(424, 142) };
+            var label = new Label { Text = "Горячая клавиша", BackColor = Color.FromArgb(27, 31, 43), ForeColor = Color.FromArgb(228, 232, 244), AutoSize = true, Location = new Point(20, 16), Font = new Font("Segoe UI Semibold", 10) };
+            hotkeyInput = new TextBox { Location = new Point(20, 49), Width = 236, ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(39, 45, 62), ForeColor = Color.White, Font = new Font("Segoe UI", 13), ShortcutsEnabled = false };
             hotkeyInput.KeyDown += HotkeyKeyDown;
-            var apply = new Button { Text = "Сохранить", Location = new Point(307, 192), Size = new Size(131, 36), BackColor = Color.FromArgb(75, 80, 112), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
-            apply.FlatAppearance.BorderSize = 0;
+            var apply = new RoundedButton { Text = "Сохранить", Location = new Point(265, 45), Size = new Size(139, 36), Fill = Color.FromArgb(65, 70, 96), ForeColor = Color.White, Cursor = Cursors.Hand };
             apply.Click += delegate { ApplyCandidate(); };
-            hotkeyNote = new Label { Text = "Нажми на поле и введи новое сочетание", AutoSize = true, Location = new Point(30, 239), ForeColor = Color.FromArgb(192, 201, 220) };
-            var help = new Label { Text = "Колесо — размер   ·   Alt + колесо — прозрачность\nКнопка булавки закрепляет снимок на экране\nЗапуск вместе с Windows настраивается в трее", AutoSize = true, Location = new Point(30, 282), ForeColor = Color.FromArgb(148, 160, 182) };
-            Controls.AddRange(new Control[] { title, subtitle, capture, label, hotkeyInput, apply, hotkeyNote, help });
+            hotkeyNote = new Label { Text = "Нажми на поле и введи сочетание", BackColor = Color.FromArgb(27, 31, 43), AutoSize = true, Location = new Point(20, 98), ForeColor = Color.FromArgb(151, 162, 184), Font = new Font("Segoe UI", 9) };
+            card.Controls.AddRange(new Control[] { label, hotkeyInput, apply, hotkeyNote });
+            var capture = new RoundedButton { Text = "Выбрать область", Location = new Point(28, 275), Size = new Size(424, 48), Fill = Color.FromArgb(104, 102, 241), ForeColor = Color.White, Cursor = Cursors.Hand, Font = new Font("Segoe UI Semibold", 10) };
+            capture.Click += delegate { StartCapture(); };
+            var help = new Label { Text = "Колесо  —  размер\nAlt + колесо  —  прозрачность\nБулавка  —  закрепить снимок", AutoSize = true, Location = new Point(31, 348), ForeColor = Color.FromArgb(137, 149, 172), Font = new Font("Segoe UI", 9) };
+            Controls.AddRange(new Control[] { title, subtitle, card, capture, help });
             var menu = new ContextMenuStrip();
             menu.Items.Add("Новый снимок", null, delegate { StartCapture(); });
             menu.Items.Add("Настройки", null, delegate { ShowMain(); });
@@ -148,6 +149,46 @@ namespace ScreenPin {
         }
     }
 
+    static class Shapes {
+        public static GraphicsPath Rounded(Rectangle rect, int radius) {
+            var path = new GraphicsPath();
+            int diameter = Math.Min(radius * 2, Math.Min(rect.Width, rect.Height));
+            path.AddArc(rect.Left, rect.Top, diameter, diameter, 180, 90);
+            path.AddArc(rect.Right - diameter, rect.Top, diameter, diameter, 270, 90);
+            path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(rect.Left, rect.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
+    class SettingsCard : Panel {
+        public SettingsCard() { DoubleBuffered = true; BackColor = Color.FromArgb(17, 20, 29); }
+        protected override void OnPaint(PaintEventArgs e) {
+            base.OnPaint(e);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = Shapes.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 14)) {
+                using (var brush = new SolidBrush(Color.FromArgb(27, 31, 43))) e.Graphics.FillPath(brush, path);
+                using (var pen = new Pen(Color.FromArgb(46, 53, 70))) e.Graphics.DrawPath(pen, path);
+            }
+        }
+    }
+
+    class RoundedButton : Button {
+        bool hovered;
+        public Color Fill { get; set; }
+        public RoundedButton() { FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; DoubleBuffered = true; }
+        protected override void OnMouseEnter(EventArgs e) { hovered = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hovered = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnPaint(PaintEventArgs e) {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.Clear(Parent is SettingsCard ? Color.FromArgb(27, 31, 43) : (Parent == null ? BackColor : Parent.BackColor));
+            using (var path = Shapes.Rounded(new Rectangle(0, 0, Width - 1, Height - 1), 10))
+            using (var brush = new SolidBrush(hovered ? ControlPaint.Light(Fill, 0.13f) : Fill)) e.Graphics.FillPath(brush, path);
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
+    }
+
     class HotkeyBinding {
         public readonly uint Modifiers;
         public readonly uint Key;
@@ -230,6 +271,10 @@ namespace ScreenPin {
         bool moving;
         bool locked;
 
+        protected override CreateParams CreateParams {
+            get { var parameters = base.CreateParams; parameters.ExStyle = (parameters.ExStyle | 0x00000080) & ~0x00040000; return parameters; }
+        }
+
         public PinWindow(Bitmap image) {
             this.image = image;
             Text = "ScreenPin — снимок";
@@ -274,7 +319,7 @@ namespace ScreenPin {
             toolbar.ZoomOut += delegate { Zoom(1 / 1.2); };
             toolbar.Save += delegate { SaveImage(); };
             toolbar.ClosePin += delegate { Close(); };
-            toolbar.ToggleLock += delegate { locked = !locked; toolbar.SetLocked(locked); picture.Cursor = locked ? Cursors.Default : Cursors.SizeAll; };
+            toolbar.ToggleLock += delegate { locked = !locked; if (locked) zoomTimer.Stop(); toolbar.SetLocked(locked); picture.Cursor = locked ? Cursors.Default : Cursors.SizeAll; };
             LocationChanged += delegate { PositionToolbar(); };
             SizeChanged += delegate { UpdateRoundedRegion(); PositionToolbar(); };
             Shown += delegate { toolbar.Show(this); PositionToolbar(); UpdateToolbar(); };
@@ -320,6 +365,7 @@ namespace ScreenPin {
             else if (!inside && toolbar.Visible) toolbar.Hide();
         }
         void Zoom(double factor) {
+            if (locked) return;
             zoomTimer.Stop();
             zoomStart = ClientSize;
             zoomTarget = new Size(Math.Max(200, Math.Min(4000, (int)(ClientSize.Width * factor))),
@@ -347,7 +393,12 @@ namespace ScreenPin {
     class PinToolbar : Form {
         public event EventHandler ZoomIn, ZoomOut, Save, ClosePin, ToggleLock;
         readonly ToolbarButton lockButton;
+        readonly ToolbarButton minusButton;
+        readonly ToolbarButton plusButton;
         protected override bool ShowWithoutActivation { get { return true; } }
+        protected override CreateParams CreateParams {
+            get { var parameters = base.CreateParams; parameters.ExStyle = (parameters.ExStyle | 0x00000080) & ~0x00040000; return parameters; }
+        }
         public PinToolbar() {
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
@@ -365,14 +416,14 @@ namespace ScreenPin {
                 Region = new Region(shape);
             }
             var tip = new ToolTip();
-            AddButton("minus", "Уменьшить", 5, delegate { if (ZoomOut != null) ZoomOut(this, EventArgs.Empty); }, tip);
-            AddButton("plus", "Увеличить", 39, delegate { if (ZoomIn != null) ZoomIn(this, EventArgs.Empty); }, tip);
+            minusButton = AddButton("minus", "Уменьшить", 5, delegate { if (ZoomOut != null) ZoomOut(this, EventArgs.Empty); }, tip);
+            plusButton = AddButton("plus", "Увеличить", 39, delegate { if (ZoomIn != null) ZoomIn(this, EventArgs.Empty); }, tip);
             lockButton = AddButton("pin", "Закрепить или открепить", 73, delegate { if (ToggleLock != null) ToggleLock(this, EventArgs.Empty); }, tip);
             AddButton("save", "Сохранить PNG", 107, delegate { if (Save != null) Save(this, EventArgs.Empty); }, tip);
             AddButton("close", "Закрыть снимок", 141, delegate { if (ClosePin != null) ClosePin(this, EventArgs.Empty); }, tip);
             FormClosed += delegate { tip.Dispose(); };
         }
-        public void SetLocked(bool value) { lockButton.Active = value; lockButton.Invalidate(); }
+        public void SetLocked(bool value) { lockButton.Active = value; lockButton.Invalidate(); minusButton.Enabled = !value; plusButton.Enabled = !value; }
         ToolbarButton AddButton(string icon, string hint, int x, EventHandler action, ToolTip tip) {
             var button = new ToolbarButton(icon) { Location = new Point(x, 5), Size = new Size(30, 30), Cursor = Cursors.Hand };
             button.Click += action;
@@ -397,9 +448,9 @@ namespace ScreenPin {
             base.OnPaint(e);
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            Color fill = Active ? Color.FromArgb(105, 103, 224) : hovered ? Color.FromArgb(75, 82, 103) : Color.FromArgb(50, 56, 72);
+            Color fill = Active ? Color.FromArgb(105, 103, 224) : hovered && Enabled ? Color.FromArgb(75, 82, 103) : Color.FromArgb(50, 56, 72);
             using (var brush = new SolidBrush(fill)) g.FillEllipse(brush, 1, 1, Width - 3, Height - 3);
-            using (var pen = new Pen(Color.FromArgb(239, 242, 250), 1.7f)) {
+            using (var pen = new Pen(Enabled ? Color.FromArgb(239, 242, 250) : Color.FromArgb(111, 119, 136), 1.7f)) {
                 pen.StartCap = LineCap.Round; pen.EndCap = LineCap.Round; pen.LineJoin = LineJoin.Round;
                 if (icon == "minus" || icon == "plus") {
                     g.DrawLine(pen, 10, 15, 20, 15);
