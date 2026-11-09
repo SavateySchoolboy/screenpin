@@ -97,6 +97,22 @@ namespace ScreenPin {
     static class QrWorkflows {
         [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
         [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
+        [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, Input[] inputs, int size);
+        [StructLayout(LayoutKind.Sequential)] struct Input { public uint Type; public InputUnion Data; }
+        [StructLayout(LayoutKind.Explicit)] struct InputUnion {
+            [FieldOffset(0)] public KeyboardInput Keyboard;
+            [FieldOffset(0)] public MouseInput Mouse;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct KeyboardInput { public ushort VirtualKey, Scan; public uint Flags, Time; public UIntPtr ExtraInfo; }
+        [StructLayout(LayoutKind.Sequential)] struct MouseInput { public int X, Y; public uint MouseData, Flags, Time; public UIntPtr ExtraInfo; }
+        static Input Key(ushort code, bool release) {
+            return new Input { Type = 1, Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = code, Flags = release ? 2u : 0u } } };
+        }
+        static void SendCopy() {
+            var keys = new Input[] { Key(0x11, false), Key(0x43, false), Key(0x43, true), Key(0x11, true) };
+            if (SendInput((uint)keys.Length, keys, Marshal.SizeOf(typeof(Input))) != keys.Length)
+                throw new InvalidOperationException("Windows не передала команду копирования активному приложению.");
+        }
         static bool copying;
         public static void CreateFromSelection() {
             if (copying) return;
@@ -110,13 +126,13 @@ namespace ScreenPin {
                 if (ticks >= 30) { copying = false; MessageBox.Show("Отпусти клавиши и попробуй снова.", "ScreenPin"); return; }
                 try {
                     uint previous = GetClipboardSequenceNumber();
-                    SendKeys.SendWait("^c");
+                    SendCopy();
                     int count = 0; var poll = new Timer { Interval = 100 };
                     poll.Tick += delegate {
                         count++;
-                        if (GetClipboardSequenceNumber() == previous && count < 12) return;
+                        if (GetClipboardSequenceNumber() == previous && count < 20) return;
                         poll.Stop(); poll.Dispose(); copying = false;
-                        if (GetClipboardSequenceNumber() == previous) { MessageBox.Show("Не удалось скопировать выделение. Выдели текст целиком и попробуй ещё раз.", "ScreenPin"); return; }
+                        if (GetClipboardSequenceNumber() == previous) { MessageBox.Show("Не удалось скопировать выделение. Попробуй скопировать текст через Ctrl+C, затем выбери «QR из буфера обмена» в меню ScreenPin в трее.", "ScreenPin"); return; }
                         CreateFromClipboard();
                     };
                     poll.Start();
